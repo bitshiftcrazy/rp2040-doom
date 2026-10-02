@@ -39,7 +39,7 @@ target_compile_definitions(common_pico INTERFACE
 )
 
 pico_generate_pio_header(common_pico ${CMAKE_CURRENT_LIST_DIR}/video_doom.pio)
-target_link_libraries(common_pico INTERFACE pico_stdlib pico_multicore pico_scanvideo_dpi)
+target_link_libraries(common_pico INTERFACE pico_stdlib pico_multicore pico_scanvideo_dpi hardware_spi)
 
 add_library(pico_cd INTERFACE)
 if (TARGET tinyusb_host)
