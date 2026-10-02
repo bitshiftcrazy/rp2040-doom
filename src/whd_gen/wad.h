@@ -3,6 +3,7 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
+#include <stdint.h>
 #pragma once
 #include <cctype>
 #include <cstring>
