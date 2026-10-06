@@ -18,44 +18,33 @@
 //
 
 #include "pico/stdlib.h"
-#include "hardware/i2c.h"
+#include <string.h>
 
 #include "doomkeys.h"
 #include "doomtype.h"
 #include "d_event.h"
 #include "i_input.h"
+
 extern boolean menuactive;
-#define BTN_LEFT   8
-#define BTN_FIRE   9
-#define BTN_RIGHT 10
 
-#define TOUCH_I2C       i2c0
-#define TOUCH_SDA       20
-#define TOUCH_SCL       21
-#define CAP1203_ADDR    0x28
-
-#define CAP1203_MAIN_CONTROL       0x00
-#define CAP1203_SENSOR_STATUS      0x03
-
-#define TOUCH_FORWARD   (1u << 0)
-#define TOUCH_USE       (1u << 1)
+#define BTN_SELECT 26
+#define BTN_BACK   27
+#define BTN_UP     28
+#define BTN_DOWN   29
 
 typedef struct
 {
-    uint gpio;
-    bool pressed;
-} button_t;
+    bool up;
+    bool down;
+    bool left;
+    bool right;
+    bool fire;
+    bool use;
+    bool enter;
+    bool escape;
+} tome_key_state_t;
 
-static button_t buttons[] =
-{
-    { BTN_LEFT,  false },
-    { BTN_FIRE,  false },
-    { BTN_RIGHT, false },
-};
-
-static bool touch_forward_pressed;
-static bool touch_use_pressed;
-
+static tome_key_state_t posted_keys;
 
 static void post_key(int key, bool pressed)
 {
@@ -69,176 +58,72 @@ static void post_key(int key, bool pressed)
     D_PostEvent(&event);
 }
 
-
-static bool cap1203_read(uint8_t reg, uint8_t *value)
+static inline void sync_key(int key, bool wanted, bool *posted)
 {
-    if (i2c_write_blocking(
-            TOUCH_I2C,
-            CAP1203_ADDR,
-            &reg,
-            1,
-            true) != 1)
-    {
-        return false;
-    }
+    if (wanted == *posted)
+        return;
 
-    return i2c_read_blocking(
-               TOUCH_I2C,
-               CAP1203_ADDR,
-               value,
-               1,
-               false) == 1;
+    *posted = wanted;
+    post_key(key, wanted);
 }
-
-
-static void cap1203_write(uint8_t reg, uint8_t value)
-{
-    uint8_t data[2] = { reg, value };
-
-    i2c_write_blocking(
-        TOUCH_I2C,
-        CAP1203_ADDR,
-        data,
-        sizeof(data),
-        false
-    );
-}
-
 
 void I_InputInit(void)
 {
-    for (unsigned i = 0;
-         i < sizeof(buttons) / sizeof(buttons[0]);
-         ++i)
-    {
-        gpio_init(buttons[i].gpio);
-        gpio_set_dir(buttons[i].gpio, GPIO_IN);
-        gpio_pull_up(buttons[i].gpio);
+    const uint buttons[] = { BTN_UP, BTN_DOWN, BTN_SELECT, BTN_BACK };
 
-        buttons[i].pressed = !gpio_get(buttons[i].gpio);
+    for (unsigned i = 0; i < sizeof(buttons) / sizeof(buttons[0]); ++i) {
+        gpio_init(buttons[i]);
+        gpio_set_dir(buttons[i], GPIO_IN);
+        gpio_pull_up(buttons[i]);
     }
 
-    i2c_init(TOUCH_I2C, 400 * 1000);
-
-    gpio_set_function(TOUCH_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(TOUCH_SCL, GPIO_FUNC_I2C);
-
-    gpio_pull_up(TOUCH_SDA);
-    gpio_pull_up(TOUCH_SCL);
-
-    touch_forward_pressed = false;
-    touch_use_pressed = false;
+    memset(&posted_keys, 0, sizeof(posted_keys));
 }
-
 
 static void poll_buttons(void)
 {
-    static boolean last_menuactive = false;
+    bool up     = !gpio_get(BTN_UP);
+    bool down   = !gpio_get(BTN_DOWN);
+    bool select = !gpio_get(BTN_SELECT);
+    bool back   = !gpio_get(BTN_BACK);
 
-    if (menuactive != last_menuactive)
-    {
-        post_key(KEY_LEFTARROW, false);
-        post_key(KEY_RCTRL, false);
-        post_key(KEY_RIGHTARROW, false);
+    tome_key_state_t wanted = {0};
 
-        post_key(KEY_UPARROW, false);
-        post_key(KEY_ENTER, false);
-        post_key(KEY_DOWNARROW, false);
-
-        for (unsigned int i = 0;
-             i < sizeof(buttons) / sizeof(buttons[0]);
-             ++i)
-        {
-            buttons[i].pressed = false;
-        }
-
-        last_menuactive = menuactive;
+    if (menuactive) {
+        wanted.up     = up;
+        wanted.down   = down;
+        wanted.enter  = select;
+        wanted.escape = back;
+    } else if (back) {
+        wanted.left  = up;
+        wanted.right = down;
+        wanted.use   = select;
+    } else {
+        wanted.up   = up;
+        wanted.down = down;
+        wanted.fire = select;
     }
 
-    for (unsigned int i = 0;
-         i < sizeof(buttons) / sizeof(buttons[0]);
-         ++i)
-    {
-        bool pressed = !gpio_get(buttons[i].gpio);
-
-        if (pressed != buttons[i].pressed)
-        {
-            buttons[i].pressed = pressed;
-
-            int key;
-
-            if (menuactive)
-            {
-                static const int menu_keys[] = {
-                    KEY_UPARROW,
-                    KEY_ENTER,
-                    KEY_DOWNARROW
-                };
-
-                key = menu_keys[i];
-            }
-            else
-            {
-                static const int game_keys[] = {
-                    KEY_LEFTARROW,
-                    KEY_RCTRL,
-                    KEY_RIGHTARROW
-                };
-
-                key = game_keys[i];
-            }
-
-            post_key(key, pressed);
-        }
-    }
+    sync_key(KEY_UPARROW,    wanted.up,     &posted_keys.up);
+    sync_key(KEY_DOWNARROW,  wanted.down,   &posted_keys.down);
+    sync_key(KEY_LEFTARROW,  wanted.left,   &posted_keys.left);
+    sync_key(KEY_RIGHTARROW, wanted.right,  &posted_keys.right);
+    sync_key(KEY_RCTRL,      wanted.fire,   &posted_keys.fire);
+    sync_key(' ',            wanted.use,    &posted_keys.use);
+    sync_key(KEY_ENTER,      wanted.enter,  &posted_keys.enter);
+    sync_key(KEY_ESCAPE,     wanted.escape, &posted_keys.escape);
 }
-
-static void poll_touch(void)
-{
-    uint8_t status;
-
-    if (!cap1203_read(CAP1203_SENSOR_STATUS, &status))
-        return;
-
-    bool forward = (status & TOUCH_FORWARD) != 0;
-    bool use     = (status & TOUCH_USE) != 0;
-
-    if (forward != touch_forward_pressed)
-    {
-        touch_forward_pressed = forward;
-        post_key(KEY_UPARROW, forward);
-    }
-
-    if (use != touch_use_pressed)
-    {
-        touch_use_pressed = use;
-        post_key(' ', use);
-    }
-
-    uint8_t main_control;
-
-    if (cap1203_read(CAP1203_MAIN_CONTROL, &main_control))
-    {
-        main_control &= ~1u;
-        cap1203_write(CAP1203_MAIN_CONTROL, main_control);
-    }
-}
-
 
 void I_GetEventTimeout(int key_timeout)
 {
     (void) key_timeout;
-
     poll_buttons();
-    poll_touch();
 }
-
 
 void I_GetEvent(void)
 {
     I_GetEventTimeout(0);
 }
-
 
 void I_StartTextInput(int x1, int y1, int x2, int y2)
 {
@@ -248,11 +133,9 @@ void I_StartTextInput(int x1, int y1, int x2, int y2)
     (void) y2;
 }
 
-
 void I_StopTextInput(void)
 {
 }
-
 
 void I_BindInputVariables(void)
 {

@@ -10,7 +10,7 @@
 
 boolean net_client_connected;
 
-#if PICO_ON_DEVICE
+#if PICO_ON_DEVICE && !defined(SPELL_TOME_NO_PICONET_HW)
 #include "hardware/irq.h"
 #include "hardware/dma.h"
 #include "hardware/timer.h"

@@ -50,7 +50,7 @@
 #include "hardware/gpio.h"
 #include "picodoom.h"
 
-#include "hardware/spi.h"
+#include "hardware/i2c.h"
 
 #include "image_decoder.h"
 #if PICO_ON_DEVICE
@@ -67,130 +67,95 @@
 #include "hardware/interp.h"
 #endif
 
-static inline uint16_t clotty_rgb565(uint8_t r, uint8_t g, uint8_t b)
+static inline uint16_t tome_rgb565(uint8_t r, uint8_t g, uint8_t b)
 {
     return ((uint16_t)(r & 0xf8) << 8)
          | ((uint16_t)(g & 0xfc) << 3)
          | ((uint16_t)b >> 3);
 }
 
-#define CLOTTY_LCD_SPI       spi0
-#define CLOTTY_LCD_SCK       2
-#define CLOTTY_LCD_MOSI      3
-#define CLOTTY_LCD_DC        4
-#define CLOTTY_LCD_RESET     5
-#define CLOTTY_LCD_BACKLIGHT 6
+#define TOME_OLED_I2C    i2c1
+#define TOME_OLED_SDA    6
+#define TOME_OLED_SCL    7
+#define TOME_OLED_ADDR   0x3c
+#define TOME_OLED_WIDTH  128
+#define TOME_OLED_HEIGHT 64
 
-static void clotty_lcd_cmd(uint8_t cmd)
+static uint8_t tome_fb[TOME_OLED_WIDTH * (TOME_OLED_HEIGHT / 8)];
+
+static void tome_oled_cmd(uint8_t cmd)
 {
-    gpio_put(CLOTTY_LCD_DC, 0);
-    spi_write_blocking(CLOTTY_LCD_SPI, &cmd, 1);
+    uint8_t buf[2] = { 0x00, cmd };
+    i2c_write_blocking(TOME_OLED_I2C, TOME_OLED_ADDR, buf, sizeof(buf), false);
 }
 
-static void clotty_lcd_data(const uint8_t *data, size_t len)
+static void tome_oled_data(const uint8_t *data, size_t len)
 {
-    gpio_put(CLOTTY_LCD_DC, 1);
-    spi_write_blocking(CLOTTY_LCD_SPI, data, len);
+    uint8_t buf[17];
+    buf[0] = 0x40;
+
+    while (len) {
+        size_t chunk = len > 16 ? 16 : len;
+        memcpy(&buf[1], data, chunk);
+        i2c_write_blocking(TOME_OLED_I2C, TOME_OLED_ADDR,
+                           buf, chunk + 1, false);
+        data += chunk;
+        len -= chunk;
+    }
 }
 
-static void clotty_lcd_fill(uint16_t color);
-
-static void clotty_lcd_init(void)
+static void tome_oled_init(void)
 {
-		spi_init(CLOTTY_LCD_SPI, 20 * 1000 * 1000);
+    i2c_init(TOME_OLED_I2C, 400 * 1000);
+    gpio_set_function(TOME_OLED_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(TOME_OLED_SCL, GPIO_FUNC_I2C);
+    gpio_pull_up(TOME_OLED_SDA);
+    gpio_pull_up(TOME_OLED_SCL);
 
-    gpio_set_function(CLOTTY_LCD_SCK, GPIO_FUNC_SPI);
-    gpio_set_function(CLOTTY_LCD_MOSI, GPIO_FUNC_SPI);
+    sleep_ms(100);
 
-    spi_set_format(
-        CLOTTY_LCD_SPI,
-        8,
-        SPI_CPOL_1,
-        SPI_CPHA_1,
-        SPI_MSB_FIRST
-    );
-
-    gpio_init(CLOTTY_LCD_DC);
-    gpio_set_dir(CLOTTY_LCD_DC, GPIO_OUT);
-
-    gpio_init(CLOTTY_LCD_RESET);
-    gpio_set_dir(CLOTTY_LCD_RESET, GPIO_OUT);
-
-    gpio_init(CLOTTY_LCD_BACKLIGHT);
-    gpio_set_dir(CLOTTY_LCD_BACKLIGHT, GPIO_OUT);
-    gpio_put(CLOTTY_LCD_BACKLIGHT, 0);
-
-    gpio_put(CLOTTY_LCD_RESET, 0);
-    sleep_ms(20);
-    gpio_put(CLOTTY_LCD_RESET, 1);
-    sleep_ms(120);
-
-    clotty_lcd_cmd(0x01);       // SWRESET
-    sleep_ms(150);
-
-    clotty_lcd_cmd(0x11);       // SLPOUT
-    sleep_ms(120);
-
-    clotty_lcd_cmd(0x3A);       // COLMOD
-    {
-        const uint8_t v = 0x55; // RGB565
-        clotty_lcd_data(&v, 1);
-    }
-
-    clotty_lcd_cmd(0x36);       // MADCTL
-    {
-        const uint8_t v = 0x00;
-        clotty_lcd_data(&v, 1);
-    }
-
-    clotty_lcd_cmd(0x21);       // INVON
-    clotty_lcd_cmd(0x13);       // NORON
-
-    clotty_lcd_cmd(0x29);       // DISPON
-    sleep_ms(20);
-
-    gpio_put(CLOTTY_LCD_BACKLIGHT, 1);
-
-
-	}
-
-static void clotty_lcd_set_window(uint16_t x0, uint16_t y0,
-                                  uint16_t x1, uint16_t y1)
-{
-    uint8_t data[4];
-
-    clotty_lcd_cmd(0x2A); // CASET
-    data[0] = x0 >> 8;
-    data[1] = x0 & 0xff;
-    data[2] = x1 >> 8;
-    data[3] = x1 & 0xff;
-    clotty_lcd_data(data, 4);
-
-    clotty_lcd_cmd(0x2B); // RASET
-    data[0] = y0 >> 8;
-    data[1] = y0 & 0xff;
-    data[2] = y1 >> 8;
-    data[3] = y1 & 0xff;
-    clotty_lcd_data(data, 4);
-
-    clotty_lcd_cmd(0x2C); // RAMWR
+    tome_oled_cmd(0xAE);
+    tome_oled_cmd(0xD5); tome_oled_cmd(0x80);
+    tome_oled_cmd(0xA8); tome_oled_cmd(0x3F);
+    tome_oled_cmd(0xD3); tome_oled_cmd(0x00);
+    tome_oled_cmd(0x40);
+    tome_oled_cmd(0xA1);
+    tome_oled_cmd(0xC8);
+    tome_oled_cmd(0xDA); tome_oled_cmd(0x12);
+    tome_oled_cmd(0x81); tome_oled_cmd(0xCF);
+    tome_oled_cmd(0xD9); tome_oled_cmd(0xF1);
+    tome_oled_cmd(0xDB); tome_oled_cmd(0x40);
+    tome_oled_cmd(0xA4);
+    tome_oled_cmd(0xA7);
+    tome_oled_cmd(0xAF);
 }
 
-static void clotty_lcd_fill(uint16_t color)
+static inline void tome_fb_clear(void)
 {
-    uint8_t row[240 * 2];
+    memset(tome_fb, 0x00, sizeof(tome_fb));
+}
 
-    for (int x = 0; x < 240; x++) {
-        row[x * 2 + 0] = color >> 8;
-        row[x * 2 + 1] = color & 0xff;
-    }
+static inline void tome_fb_set_pixel(int x, int y, bool black)
+{
+    if ((unsigned)x >= TOME_OLED_WIDTH || (unsigned)y >= TOME_OLED_HEIGHT)
+        return;
 
-    clotty_lcd_set_window(0, 0, 239, 239);
+    uint8_t *p = &tome_fb[(y >> 3) * TOME_OLED_WIDTH + x];
+    uint8_t mask = 1u << (y & 7);
 
-    gpio_put(CLOTTY_LCD_DC, 1);
+    if (black)
+        *p |= mask;
+    else
+        *p &= (uint8_t)~mask;
+}
 
-    for (int y = 0; y < 240; y++) {
-        spi_write_blocking(CLOTTY_LCD_SPI, row, sizeof(row));
+static void tome_oled_render(void)
+{
+    for (int page = 0; page < TOME_OLED_HEIGHT / 8; ++page) {
+        tome_oled_cmd(0xB0 + page);
+        tome_oled_cmd(0x02);
+        tome_oled_cmd(0x10);
+        tome_oled_data(&tome_fb[page * TOME_OLED_WIDTH], TOME_OLED_WIDTH);
     }
 }
 
@@ -722,7 +687,7 @@ void __noinline new_frame_init_overlays_palette_and_wipe() {
                         g = gammatable[usegamma-1][g];
                         b = gammatable[usegamma-1][b];
                     }
-                    palette[i] = clotty_rgb565(r, g, b);
+                    palette[i] = tome_rgb565(r, g, b);
                 }
             } else {
                 int mul, r0, g0, b0;
@@ -744,7 +709,7 @@ void __noinline new_frame_init_overlays_palette_and_wipe() {
                     r += ((r0 - r) * mul) >> 16;
                     g += ((g0 - g) * mul) >> 16;
                     b += ((b0 - b) * mul) >> 16;
-                    palette[i] = clotty_rgb565(r, g, b);
+                    palette[i] = tome_rgb565(r, g, b);
                 }
             }
             next_pal = -1;
@@ -821,7 +786,7 @@ void __no_inline_not_in_flash_func(new_frame_stuff)() {
 
 
 static void __scratch_x("scanlines")
-clotty_compose_scanline(uint16_t *dest, int scanline)
+tome_compose_scanline(uint16_t *dest, int scanline)
 {
     DEBUG_PINS_SET(scanline_copy, 1);
 
@@ -893,39 +858,99 @@ clotty_compose_scanline(uint16_t *dest, int scanline)
     DEBUG_PINS_CLR(scanline_copy, 1);
 }
 
-static uint16_t __aligned(4) clotty_linebuf[SCREENWIDTH];
-static uint8_t clotty_txbuf[240 * 2];
+#define TOME_DOOM_W      102
+#define TOME_DOOM_H      64
+#define TOME_DOOM_X_OFF  ((TOME_OLED_WIDTH - TOME_DOOM_W) / 2)
 
-static void clotty_present_frame(void)
+static uint16_t __aligned(4) tome_linebuf[SCREENWIDTH];
+
+static const uint8_t tome_bayer4[4][4] = {
+    {  0,  8,  2, 10 },
+    { 12,  4, 14,  6 },
+    {  3, 11,  1,  9 },
+    { 15,  7, 13,  5 },
+};
+
+static inline uint8_t tome_rgb565_luma(uint16_t px)
 {
-    if (display_video_type == VIDEO_TYPE_TEXT) {
+    uint8_t r5 = (px >> 11) & 0x1f;
+    uint8_t g6 = (px >> 5)  & 0x3f;
+    uint8_t b5 = px & 0x1f;
+
+    uint8_t r = (r5 << 3) | (r5 >> 2);
+    uint8_t g = (g6 << 2) | (g6 >> 4);
+    uint8_t b = (b5 << 3) | (b5 >> 2);
+
+    return (uint8_t)((77u * r + 150u * g + 29u * b) >> 8);
+}
+
+static void tome_present_frame(void)
+{
+    if (display_video_type == VIDEO_TYPE_TEXT)
         return;
-    }
 
-    clotty_lcd_set_window(0, 20, 239, 219);
-    gpio_put(CLOTTY_LCD_DC, 1);
+    tome_fb_clear();
 
-    for (int y = 0; y < SCREENHEIGHT; ++y) {
-        clotty_compose_scanline(clotty_linebuf, y);
+    uint32_t luma_sum[TOME_DOOM_W] = {0};
+    uint16_t sample_count[TOME_DOOM_W] = {0};
+    int out_y = 0;
 
-        for (int x = 0; x < 240; ++x) {
-            unsigned sx = ((unsigned)x * SCREENWIDTH) / 240u;
-            uint16_t px = clotty_linebuf[sx];
+    for (int sy = 0; sy < SCREENHEIGHT; ++sy) {
+        tome_compose_scanline(tome_linebuf, sy);
 
-            clotty_txbuf[x * 2 + 0] = (uint8_t)(px >> 8);
-            clotty_txbuf[x * 2 + 1] = (uint8_t)px;
+        if (out_y >= TOME_DOOM_H)
+            continue;
+
+        for (int x = 0; x < TOME_DOOM_W; ++x) {
+            unsigned sx0 = ((unsigned)x * SCREENWIDTH) / TOME_DOOM_W;
+            unsigned sx1 =
+                ((unsigned)(x + 1) * SCREENWIDTH) / TOME_DOOM_W;
+
+            for (unsigned sx = sx0; sx < sx1; ++sx) {
+                luma_sum[x] += tome_rgb565_luma(tome_linebuf[sx]);
+                ++sample_count[x];
+            }
         }
 
-        spi_write_blocking(
-            CLOTTY_LCD_SPI,
-            clotty_txbuf,
-            sizeof(clotty_txbuf)
-        );
+        int next_sy =
+            ((out_y + 1) * SCREENHEIGHT) / TOME_DOOM_H;
+
+        if (sy + 1 != next_sy)
+            continue;
+
+        for (int x = 0; x < TOME_DOOM_W; ++x) {
+            uint8_t lum =
+                (uint8_t)(luma_sum[x] / sample_count[x]);
+
+            uint16_t inv = 255u - lum;
+            lum = (uint8_t)(255u - ((inv * inv) >> 8));
+
+            int contrast = (int)lum - 160;
+            contrast = 160 + (contrast * 3) / 2;
+            if (contrast < 0)
+                contrast = 0;
+            else if (contrast > 255)
+                contrast = 255;
+            lum = (uint8_t)contrast;
+
+            uint8_t threshold =
+                (uint8_t)(tome_bayer4[out_y & 3][x & 3] * 16u + 8u);
+
+            tome_fb_set_pixel(TOME_DOOM_X_OFF + x, out_y,
+                              lum < threshold);
+
+            luma_sum[x] = 0;
+            sample_count[x] = 0;
+        }
+
+        ++out_y;
     }
+
+    tome_oled_render();
 }
 
 
-void I_ClottyPresentReadyFrame(void)
+void I_TomePresentReadyFrame(void)
 {
     sem_acquire_blocking(&render_frame_ready);
 
@@ -950,7 +975,7 @@ void I_ClottyPresentReadyFrame(void)
     interp_updated = 0;
 #endif
 
-    clotty_present_frame();
+    tome_present_frame();
 
 #if USE_INTERP
     if (interp_updated && need_save) {
@@ -977,8 +1002,9 @@ static void core1(void)
 #endif
 void I_InitGraphics(void)
 {
-    clotty_lcd_init();
-    clotty_lcd_fill(0x0000);
+    tome_oled_init();
+    tome_fb_clear();
+    tome_oled_render();
 
     stbar = resolve_vpatch_handle(VPATCH_STBAR);
 

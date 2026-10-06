@@ -511,6 +511,7 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
 
         NO_USE_NET=1 # standard networking
         USE_PICO_NET=1
+        $<$<STREQUAL:${PICO_BOARD},spell_tome>:SPELL_TOME_NO_PICONET_HW=1>
         # for vgaboard
         PICO_DEFAULT_I2C=1
         PICO_DEFAULT_I2C_SDA_PIN=18

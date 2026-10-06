@@ -29,7 +29,7 @@ extern "C" {
 #include "doom/f_finale.h"
 #include "v_video.h"
 #include "i_video.h"
-void I_ClottyPresentReadyFrame(void);
+void I_TomePresentReadyFrame(void);
 }
 // todo compare with and without
 #define USE_XIPCPY 0
@@ -2962,7 +2962,7 @@ void pd_end_frame(int wipe_start) {
     sem_release(&render_frame_ready);
 
 #if PICO_ON_DEVICE
-    I_ClottyPresentReadyFrame();
+    I_TomePresentReadyFrame();
 #endif
 
     DEBUG_PINS_CLR(start_end, 2);
